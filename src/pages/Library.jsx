@@ -4,7 +4,9 @@ import sql from "../lib/db";
 import ColorThief from "colorthief";
 
 // --- Curated Spine Colors ---
+// --- Curated Spine Colors ---
 const BOOK_COLORS = [
+  "bg-red-900", "bg-blue-900", "bg-green-900", "bg-yellow-700",
   "bg-red-900", "bg-blue-900", "bg-green-900", "bg-yellow-700",
   "bg-purple-900", "bg-indigo-900", "bg-teal-900", "bg-rose-900",
   "bg-slate-800", "bg-orange-800", "bg-emerald-900", "bg-amber-900",
