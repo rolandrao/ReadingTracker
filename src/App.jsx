@@ -3,6 +3,7 @@ import { ThemeProvider } from "./components/ThemeProvider";
 import MainLayout from "./layout/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import Library from "./pages/Library";
+import Library3D from "./pages/Library3D";
 
 function App() {
   return (
