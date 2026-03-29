@@ -1,61 +1,56 @@
-import { Link, useLocation } from "react-router-dom";
-import { Moon, Sun } from "lucide-react";
-import { useTheme } from "./ThemeProvider";
+import { NavLink } from "react-router-dom";
+import { UserButton } from "@clerk/clerk-react";
 
 export default function Navbar() {
-  const location = useLocation();
-  const isActive = (path) => location.pathname === path;
-  
-  // Bring in the theme state and the setter function
-  const { theme, setTheme } = useTheme();
+  const linkStyle = ({ isActive }) => 
+    `text-sm font-bold uppercase tracking-widest transition-colors px-3 py-2 rounded-lg ${
+      isActive 
+        ? "text-amber-500 bg-amber-500/10" 
+        : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
+    }`;
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-zinc-200 bg-white/80 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/80 transition-colors duration-300">
-      <div className="flex h-16 w-full items-center justify-between px-6 md:px-8">
-        
-        {/* Left Side */}
-        <div className="flex items-center gap-8">
-          <Link to="/" className="flex items-center gap-2">
-            <span className="text-xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-              📚 ReadTracker
-            </span>
-          </Link>
+    <nav className="w-full bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 sticky top-0 z-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
           
-          <nav className="hidden md:flex items-center gap-6">
-            <Link to="/" className={`text-sm font-medium transition-colors hover:text-zinc-900 dark:hover:text-zinc-50 ${isActive("/") ? "text-zinc-900 dark:text-zinc-50" : "text-zinc-500 dark:text-zinc-400"}`}>
-              Dashboard
-            </Link>
-            <Link to="/library" className={`text-sm font-medium transition-colors hover:text-zinc-900 dark:hover:text-zinc-50 ${isActive("/library") ? "text-zinc-900 dark:text-zinc-50" : "text-zinc-500 dark:text-zinc-400"}`}>
-              Virtual Bookshelf
-            </Link>
-          </nav>
-        </div>
-
-        {/* Right Side */}
-        <div className="flex items-center gap-4">
-          <div className="hidden sm:flex items-center gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-900 px-3 py-1.5 rounded-full border border-zinc-200 dark:border-zinc-800">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-            </span>
-            Sync Active
+          {/* Logo / App Name */}
+          <div className="flex-shrink-0">
+            <span className="text-xl font-black italic tracking-tighter text-white">Roland's Reading Room</span>
           </div>
 
-          {/* Theme Toggle Button */}
-          <button
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            className="p-2 rounded-full bg-zinc-100 dark:bg-zinc-900 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-50 transition-colors"
-          >
-            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
-          
-          {/* Avatar Placeholder */}
-          <div className="h-8 w-8 rounded-full bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center text-sm font-bold text-white dark:text-zinc-900 cursor-pointer">
-            ME
+          {/* Desktop Navigation Links */}
+          <div className="hidden md:flex space-x-2">
+            <NavLink to="/" className={linkStyle}>Home</NavLink>
+            <NavLink to="/library" className={linkStyle}>Library</NavLink>
+            <NavLink to="/search" className={linkStyle}>Search</NavLink>
+            <NavLink to="/social" className={linkStyle}>Social</NavLink>
+            <NavLink to="/analytics" className={linkStyle}>Analytics</NavLink>
           </div>
+
+          {/* Clerk Avatar Profile (Safely embedded in the layout!) */}
+          <div className="flex items-center gap-4">
+            <UserButton 
+              afterSignOutUrl="/" 
+              appearance={{
+                elements: {
+                  userButtonAvatarBox: "w-9 h-9 border-2 border-zinc-800 shadow-sm hover:border-zinc-600 transition-colors"
+                }
+              }}
+            />
+          </div>
+
         </div>
-        
       </div>
-    </header>
+
+      {/* Mobile Navigation (Scrollable horizontally) */}
+      <div className="md:hidden flex overflow-x-auto [scrollbar-width:none] px-4 py-2 space-x-2 border-t border-zinc-800/50">
+        <NavLink to="/" className={linkStyle}>Home</NavLink>
+        <NavLink to="/library" className={linkStyle}>Library</NavLink>
+        <NavLink to="/search" className={linkStyle}>Search</NavLink>
+        <NavLink to="/social" className={linkStyle}>Social</NavLink>
+        <NavLink to="/analytics" className={linkStyle}>Analytics</NavLink>
+      </div>
+    </nav>
   );
 }

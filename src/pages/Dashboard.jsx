@@ -1,267 +1,288 @@
-import { useEffect, useState } from "react";
-import sql from "../lib/db"; // Direct connection to Neon
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import {
-  BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+import { useEffect, useState, useMemo } from "react";
+import { useUser } from "@clerk/clerk-react";
+import sql from "../lib/db";
+import { 
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+  PieChart, Pie, Sector
 } from "recharts";
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const CHART_COLORS = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#84cc16'];
+
 export default function Dashboard() {
+  const { user, isLoaded } = useUser();
   const [books, setBooks] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Controls
+  const [selectedYear, setSelectedYear] = useState(2026);
+  const [selectedMonthIndex, setSelectedMonthIndex] = useState(null); // null means 'All Year'
 
-  const [activeYear, setActiveYear] = useState(new Date().getFullYear().toString());
-  const [availableYears, setAvailableYears] = useState([]);
-
-  const [stats, setStats] = useState({ read: 0, pages: 0, projected: 0, longest: { title: "None", page_count: 0 } });
-  const [monthlyData, setMonthlyData] = useState([]);
-  const [lengthData, setLengthData] = useState([]);
-
-  // 1. Direct DB Fetch
   useEffect(() => {
-    async function getDashboardData() {
+    async function fetchAnalytics() {
+      if (!isLoaded || !user) {
+        setLoading(!isLoaded);
+        return;
+      }
       try {
-        const data = await sql`SELECT * FROM books`;
+        // REMOVED gb.genre from this query so Neon doesn't crash!
+        const data = await sql`
+          SELECT 
+            gb.title, gb.author, gb.page_count, gb.genre,
+            ub.rating, ub.date_finished
+          FROM user_books ub
+          JOIN global_books gb ON ub.book_id = gb.id
+          WHERE ub.user_id = ${user.id} AND ub.status = 'read' AND ub.date_finished IS NOT NULL;
+        `;
         setBooks(data);
-
-        const currentYearStr = new Date().getFullYear().toString();
-
-        const yearsSet = new Set(
-          data.filter(b => (b.status?.toLowerCase() === 'read') && b.date_finished)
-            .map(b => {
-              const d = new Date(b.date_finished);
-              return isNaN(d) ? null : d.getFullYear().toString();
-            }).filter(Boolean)
-        );
-
-        yearsSet.add(currentYearStr);
-        const sortedYears = Array.from(yearsSet).sort((a, b) => b - a);
-        setAvailableYears(sortedYears);
-
-        // SAFE YEAR CHECK
-        const targetYear = data.some(b => {
-          if (!b.date_finished) return false;
-          const d = new Date(b.date_finished);
-          return d.getFullYear().toString() === currentYearStr;
-        })
-          ? currentYearStr
-          : (sortedYears[0] || currentYearStr);
-
-        setActiveYear(targetYear);
       } catch (err) {
-        console.error("Dashboard DB Fetch Error:", err);
+        console.error("Failed to fetch analytics:", err);
       } finally {
         setLoading(false);
       }
     }
-    getDashboardData();
-  }, []);
+    fetchAnalytics();
+  }, [user, isLoaded]);
 
-  // 2. Statistics & Chart Calculations
+  // 1. Filter books by the selected year
+  const yearBooks = useMemo(() => {
+    return books.filter(b => new Date(b.date_finished).getFullYear() === selectedYear);
+  }, [books, selectedYear]);
+
   useEffect(() => {
-    if (books.length === 0) return;
+    if (yearBooks.length > 0) {
+      console.log(`\n=== 📚 BOOKS FOUND FOR ${selectedYear} ===`);
+      console.log(`Total Count: ${yearBooks.length}`);
+      yearBooks.forEach((book, index) => {
+        // Formatting the date so you can see exactly what the DB thinks it is
+        const dateStr = new Date(book.date_finished).toISOString().split('T')[0];
+        console.log(`${index + 1}. [${dateStr}] - ${book.title}`);
+      });
+      console.log("==================================\n");
+    }
+  }, [yearBooks, selectedYear]);
 
-    // SAFE FILTER: Using getFullYear()
-    const finishedThisYear = books.filter((book) => {
-      if (!book.date_finished) return false;
-      const isRead = book.status?.toLowerCase() === 'read';
-      const d = new Date(book.date_finished);
-      return isRead && !isNaN(d) && d.getFullYear().toString() === activeYear;
-    });
+  // 2. Crunch Top-Level Metrics & Projections
+  const stats = useMemo(() => {
+    const finishedCount = yearBooks.length;
+    const totalPages = yearBooks.reduce((sum, b) => sum + (b.page_count || 0), 0);
+    
+    const ratedBooks = yearBooks.filter(b => b.rating && b.rating > 0);
+    const avgRating = ratedBooks.length 
+      ? (ratedBooks.reduce((sum, b) => sum + b.rating, 0) / ratedBooks.length).toFixed(1) 
+      : "N/A";
 
-    const totalPages = finishedThisYear.reduce((sum, book) => sum + (book.page_count || 0), 0);
-    const longestBook = finishedThisYear.reduce(
-      (max, book) => ((book.page_count || 0) > (max.page_count || 0) ? book : max),
-      { page_count: 0, title: "None" }
-    );
+    // Projections Math
+    const currentYear = new Date().getFullYear();
+    let projectedBooks = finishedCount;
+    let projectedPages = totalPages;
 
-    const currentYearStr = new Date().getFullYear().toString();
-    let projected = finishedThisYear.length;
-    if (activeYear === currentYearStr) {
-      const startOfYear = new Date(new Date().getFullYear(), 0, 1);
-      const dayOfYear = Math.floor((new Date() - startOfYear) / (1000 * 60 * 60 * 24));
-      const pace = dayOfYear > 0 ? (finishedThisYear.length / dayOfYear) : 0;
-      projected = Math.round(pace * 365);
+    if (selectedYear === currentYear) {
+      const now = new Date();
+      const start = new Date(currentYear, 0, 0);
+      const diff = now - start;
+      const oneDay = 1000 * 60 * 60 * 24;
+      const dayOfYear = Math.floor(diff / oneDay);
+      const daysInYear = (currentYear % 4 === 0) ? 366 : 365;
+      
+      if (dayOfYear > 0) {
+        const paceMultiplier = daysInYear / dayOfYear;
+        projectedBooks = Math.round(finishedCount * paceMultiplier);
+        projectedPages = Math.round(totalPages * paceMultiplier);
+      }
     }
 
-    setStats({ read: finishedThisYear.length, pages: totalPages, projected, longest: longestBook });
+    return { finishedCount, totalPages, avgRating, projectedBooks, projectedPages };
+  }, [yearBooks, selectedYear]);
 
-    // Monthly Chart Formatting (FIXED: Using getMonth instead of substring)
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const mData = months.map(m => ({ name: m, books: 0, pages: 0 }));
-
-    finishedThisYear.forEach(book => {
-      const d = new Date(book.date_finished);
-      if (!isNaN(d)) {
-        const monthIndex = d.getMonth(); 
-        mData[monthIndex].books += 1;
-        mData[monthIndex].pages += (book.page_count || 0);
-      }
+  // 3. Prepare Bar Chart Data (Monthly Breakdown)
+  const monthlyData = useMemo(() => {
+    const data = MONTHS.map((month, index) => ({ name: month, index, books: 0, pages: 0 }));
+    yearBooks.forEach(book => {
+      const monthIndex = new Date(book.date_finished).getMonth();
+      data[monthIndex].books += 1;
+      data[monthIndex].pages += (book.page_count || 0);
     });
-    setMonthlyData(mData);
+    return data;
+  }, [yearBooks]);
 
-    // Book Length Donut
-    const lengths = { short: 0, medium: 0, long: 0, epic: 0 };
-    books.filter(b => b.status?.toLowerCase() === 'read').forEach(book => {
-      const p = book.page_count || 0;
-      if (p > 0 && p < 250) lengths.short++;
-      else if (p >= 250 && p < 400) lengths.medium++;
-      else if (p >= 400 && p < 600) lengths.long++;
-      else if (p >= 600) lengths.epic++;
+  // 4. Prepare Pie Chart Data
+  const { authorData, genreData } = useMemo(() => {
+    const filteredBooks = selectedMonthIndex !== null 
+      ? yearBooks.filter(b => new Date(b.date_finished).getMonth() === selectedMonthIndex)
+      : yearBooks;
+
+    const authors = {};
+    const genres = {};
+
+    filteredBooks.forEach(book => {
+      const author = book.author || "Unknown";
+      authors[author] = (authors[author] || 0) + 1;
+      
+      // We removed genre from SQL, so this gracefully falls back to Uncategorized
+      const genre = book.genre || "Uncategorized";
+      genres[genre] = (genres[genre] || 0) + 1;
     });
 
-    setLengthData([
-      { name: '< 250 pgs', value: lengths.short, color: '#3b82f6' },
-      { name: '250-400 pgs', value: lengths.medium, color: '#10b981' },
-      { name: '400-600 pgs', value: lengths.long, color: '#f59e0b' },
-      { name: '600+ pgs', value: lengths.epic, color: '#ef4444' }
-    ].filter(d => d.value > 0));
+    const formatForPie = (obj) => Object.entries(obj)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8); 
 
-  }, [books, activeYear]);
+    return { authorData: formatForPie(authors), genreData: formatForPie(genres) };
+  }, [yearBooks, selectedMonthIndex]);
+
+  if (loading) return <div className="flex-1 flex items-center justify-center text-zinc-500 animate-pulse h-full">Crunching the data...</div>;
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-zinc-900 border border-zinc-700 p-3 rounded-xl shadow-xl z-50">
+          <p className="text-zinc-100 font-bold mb-1">{label || payload[0].name}</p>
+          {payload.map((entry, idx) => (
+            <p key={idx} className="text-sm" style={{ color: entry.color || entry.fill }}>
+              {entry.name}: <span className="font-bold">{entry.value.toLocaleString()}</span>
+            </p>
+          ))}
+        </div>
+      );
+    }
+    return null;
+  };
 
   return (
-    <div className="space-y-8 pb-10 px-4 md:px-8 bg-zinc-950 min-h-screen text-zinc-100">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-8">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight italic">Reading Analytics</h2>
-          <p className="text-zinc-500">
-            Insights for the <strong className="text-zinc-300">{activeYear}</strong> cycle.
-          </p>
+    <div className="flex-1 p-4 md:p-8 overflow-y-auto [scrollbar-width:none]">
+      <div className="max-w-7xl mx-auto space-y-8">
+        
+        {/* HEADER & CONTROLS */}
+        <header className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-zinc-100 uppercase tracking-tighter italic">Analytics Vault</h1>
+            <p className="text-zinc-500 font-medium">Deep dive into your reading habits.</p>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Target Year:</label>
+            <select 
+              value={selectedYear}
+              onChange={(e) => {
+                setSelectedYear(Number(e.target.value));
+                setSelectedMonthIndex(null); 
+              }}
+              className="bg-zinc-900 border border-zinc-700 text-zinc-100 px-4 py-2 rounded-xl focus:outline-none focus:ring-1 focus:ring-amber-500 font-bold cursor-pointer"
+            >
+              {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+        </header>
+
+        {/* TOP LEVEL METRICS */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <StatCard title="Books Finished" value={stats.finishedCount} />
+          <StatCard title="Pages Turned" value={stats.totalPages.toLocaleString()} />
+          <StatCard title="Avg Rating" value={stats.avgRating} highlight={false} />
+          <StatCard title="Proj. Books EOY" value={stats.projectedBooks} highlight={selectedYear === new Date().getFullYear()} />
+          <StatCard title="Proj. Pages EOY" value={stats.projectedPages.toLocaleString()} highlight={selectedYear === new Date().getFullYear()} />
         </div>
 
-        {!loading && availableYears.length > 0 && (
-          <select
-            value={activeYear}
-            onChange={(e) => setActiveYear(e.target.value)}
-            className="h-10 px-4 py-2 text-sm bg-zinc-900 border border-zinc-800 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-zinc-700 transition-all cursor-pointer"
-          >
-            {availableYears.map(year => (
-              <option key={year} value={year}>{year} Reading Year</option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {loading ? (
-        <div className="text-zinc-500 animate-pulse py-20 text-center">Querying your lifetime library...</div>
-      ) : (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard title="Books Finished" value={stats.read} subtitle={`In ${activeYear}`} icon="📚" />
-            <StatCard title="Pages Devoured" value={stats.pages.toLocaleString()} subtitle={`In ${activeYear}`} icon="📄" />
-            <StatCard title="Projected" value={stats.projected} subtitle={activeYear === new Date().getFullYear().toString() ? "EOY Pace" : "Final Count"} icon="📈" />
-            <StatCard title="Longest Book" value={stats.longest?.title || "None"} subtitle={`${stats.longest?.page_count || 0} pages`} icon="🏋️‍♂️" isTruncated />
+        {/* CHARTS GRID */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          
+          {/* BAR CHART: VOLUME OVER TIME */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-md col-span-1 lg:col-span-2">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Volume by Month</h3>
+              <p className="text-xs text-zinc-500 italic">Click a bar to filter pie charts</p>
+            </div>
+            
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={monthlyData} onClick={(e) => {
+                  if (e && e.activeTooltipIndex !== undefined) {
+                    setSelectedMonthIndex(prev => prev === e.activeTooltipIndex ? null : e.activeTooltipIndex);
+                  }
+                }}>
+                  <XAxis dataKey="name" stroke="#52525b" tick={{fill: '#a1a1aa', fontSize: 12}} tickLine={false} axisLine={false} />
+                  <YAxis yAxisId="left" stroke="#52525b" tick={{fill: '#a1a1aa', fontSize: 12}} tickLine={false} axisLine={false} />
+                  <YAxis yAxisId="right" orientation="right" stroke="#52525b" tick={{fill: '#a1a1aa', fontSize: 12}} tickLine={false} axisLine={false} />
+                  <Tooltip content={<CustomTooltip />} cursor={{fill: '#27272a'}} />
+                  <Bar yAxisId="left" dataKey="books" name="Books" fill="#f59e0b" radius={[4, 4, 0, 0]} className="cursor-pointer" />
+                  <Bar yAxisId="right" dataKey="pages" name="Pages" fill="#3b82f6" radius={[4, 4, 0, 0]} className="cursor-pointer" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader>
-                <CardTitle className="text-zinc-100">Monthly Velocity</CardTitle>
-                <p className="text-sm text-zinc-500">Books finished per month</p>
-              </CardHeader>
-              <CardContent className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={monthlyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272a" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
-                    <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
-                    <Tooltip cursor={{ fill: '#27272a' }} contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46', borderRadius: '8px' }} />
-                    <Bar dataKey="books" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader>
-                <CardTitle className="text-zinc-100">Page Volume</CardTitle>
-                <p className="text-sm text-zinc-500">Total pages read per month</p>
-              </CardHeader>
-              <CardContent className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={monthlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorPages" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272a" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
-                    <Tooltip contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46', borderRadius: '8px' }} />
-                    <Area type="monotone" dataKey="pages" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorPages)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader>
-                <CardTitle className="text-zinc-100">Distribution</CardTitle>
-                <p className="text-sm text-zinc-500">Lifetime book lengths</p>
-              </CardHeader>
-              <CardContent className="h-[250px] flex items-center justify-center">
+          {/* PIE CHART 1: AUTHORS */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-md relative">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Top Authors</h3>
+              {selectedMonthIndex !== null && (
+                <button onClick={() => setSelectedMonthIndex(null)} className="text-xs text-amber-500 hover:text-amber-400 font-bold uppercase tracking-wider bg-amber-500/10 px-2 py-1 rounded">Reset Month</button>
+              )}
+            </div>
+            {selectedMonthIndex !== null && <p className="text-zinc-500 text-xs text-center absolute top-14 w-full left-0">Showing data for {MONTHS[selectedMonthIndex]}</p>}
+            
+            {authorData.length > 0 ? (
+              <div className="h-64 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie
-                      data={lengthData}
-                      cx="50%" cy="50%"
-                      innerRadius={60} outerRadius={80}
-                      paddingAngle={5} dataKey="value" stroke="none"
-                    >
-                      {lengthData.map((entry, index) => <Cell key={index} fill={entry.color} />)}
+                    <Tooltip content={<CustomTooltip />} />
+                    <Pie data={authorData} innerRadius={60} outerRadius={90} paddingAngle={2} dataKey="value" stroke="none">
+                      {authorData.map((entry, index) => <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                     </Pie>
-                    <Tooltip contentStyle={{ backgroundColor: '#18181b', border: '1px solid #3f3f46', borderRadius: '8px' }} />
                   </PieChart>
                 </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <Card className="lg:col-span-2 bg-zinc-900 border-zinc-800">
-              <CardHeader>
-                <CardTitle className="text-zinc-100">Top Heavyweights</CardTitle>
-                <p className="text-sm text-zinc-500">Your most impressive long reads</p>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {books.filter(b => b.status?.toLowerCase() === 'read').sort((a, b) => (b.page_count || 0) - (a.page_count || 0)).slice(0, 4).map((book, i) => (
-                    <div key={i} className="flex items-center justify-between border-b border-zinc-800 pb-2 last:border-0 last:pb-0">
-                      <div className="max-w-[70%]">
-                        <p className="font-semibold text-sm text-zinc-100 truncate">{book.title}</p>
-                        <p className="text-xs text-zinc-500">{book.author}</p>
-                      </div>
-                      <div className="font-bold text-sm bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full whitespace-nowrap">
-                        {book.page_count} pgs
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+              </div>
+            ) : (
+              <div className="h-64 flex items-center justify-center text-zinc-600 italic">No author data found.</div>
+            )}
           </div>
-        </>
-      )}
+
+          {/* PIE CHART 2: GENRES */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-md relative">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Genre Breakdown</h3>
+              {selectedMonthIndex !== null && (
+                <button onClick={() => setSelectedMonthIndex(null)} className="text-xs text-amber-500 hover:text-amber-400 font-bold uppercase tracking-wider bg-amber-500/10 px-2 py-1 rounded">Reset Month</button>
+              )}
+            </div>
+            {selectedMonthIndex !== null && <p className="text-zinc-500 text-xs text-center absolute top-14 w-full left-0">Showing data for {MONTHS[selectedMonthIndex]}</p>}
+            
+            {genreData.length > 0 ? (
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Tooltip content={<CustomTooltip />} />
+                    <Pie data={genreData} innerRadius={60} outerRadius={90} paddingAngle={2} dataKey="value" stroke="none">
+                      {genreData.map((entry, index) => <Cell key={`cell-${index}`} fill={CHART_COLORS[(index + 4) % CHART_COLORS.length]} />)}
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-64 flex items-center justify-center text-zinc-600 italic">No genre data found.</div>
+            )}
+          </div>
+
+        </div>
+      </div>
     </div>
   );
 }
 
-function StatCard({ title, value, subtitle, icon, isTruncated }) {
+// Reusable UI Component
+function StatCard({ title, value, highlight }) {
   return (
-    <Card className="bg-zinc-900 border-zinc-800">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-zinc-400">{title}</CardTitle>
-        <span className="text-xl">{icon}</span>
-      </CardHeader>
-      <CardContent>
-        <div className={`text-2xl font-bold text-zinc-100 ${isTruncated ? 'truncate' : ''}`} title={value}>
-          {value}
-        </div>
-        <p className="text-xs text-zinc-500 mt-1">{subtitle}</p>
-      </CardContent>
-    </Card>
+    <div className={`border rounded-2xl p-4 shadow-md flex flex-col justify-between h-32 transition-colors ${
+      highlight 
+      ? 'bg-amber-500/5 border-amber-500/30 text-amber-500' 
+      : 'bg-zinc-900 border-zinc-800 text-zinc-100 hover:border-zinc-700'
+    }`}>
+      <h3 className={`text-xs font-bold uppercase tracking-widest line-clamp-2 ${highlight ? 'text-amber-600/80' : 'text-zinc-400'}`}>
+        {title}
+      </h3>
+      <p className="text-3xl sm:text-4xl font-black mt-2">{value}</p>
+    </div>
   );
 }
